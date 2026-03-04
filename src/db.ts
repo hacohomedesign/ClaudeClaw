@@ -292,6 +292,19 @@ export function getAllScheduledTasks(): ScheduledTask[] {
     .all() as ScheduledTask[];
 }
 
+/**
+ * Advance next_run immediately when a task is picked up so the scheduler
+ * cannot re-fire the same task while the agent is still running.
+ * Call this before starting the agent; updateTaskAfterRun will overwrite
+ * next_run again once the agent finishes.
+ */
+export function markTaskRunning(id: string, nextRun: number): void {
+  db.prepare(`UPDATE scheduled_tasks SET next_run = ? WHERE id = ?`).run(
+    nextRun,
+    id,
+  );
+}
+
 export function updateTaskAfterRun(
   id: string,
   nextRun: number,
