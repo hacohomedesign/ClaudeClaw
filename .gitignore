@@ -23,3 +23,7 @@ workspace/
 .idea/
 *.swp
 .wwebjs_cache/
+
+# Playwright
+.playwright-cli/
+test-results/
