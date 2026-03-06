@@ -3,6 +3,7 @@ import path from 'path';
 
 import { createBot } from './bot.js';
 import { ALLOWED_CHAT_ID, TELEGRAM_BOT_TOKEN, STORE_DIR, PROJECT_ROOT } from './config.js';
+import { checkPendingMigrations } from './migrations.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase } from './db.js';
 import { logger } from './logger.js';
@@ -45,6 +46,7 @@ function releaseLock(): void {
 
 async function main(): Promise<void> {
   showBanner();
+  checkPendingMigrations(PROJECT_ROOT);
 
   if (!TELEGRAM_BOT_TOKEN) {
     logger.error('TELEGRAM_BOT_TOKEN is not set. Add it to .env and restart.');
