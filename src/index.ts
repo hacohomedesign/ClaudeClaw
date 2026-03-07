@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { createBot } from './bot.js';
-import { ALLOWED_CHAT_ID, TELEGRAM_BOT_TOKEN, STORE_DIR, PROJECT_ROOT } from './config.js';
+import { ALLOWED_CHAT_ID, CLAUDECLAW_CONFIG, CLAUDECLAW_WORKSPACE, TELEGRAM_BOT_TOKEN, STORE_DIR, PROJECT_ROOT } from './config.js';
 import { checkPendingMigrations } from './migrations.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase } from './db.js';
@@ -11,6 +11,7 @@ import { cleanupOldUploads } from './media.js';
 import { runDecaySweep } from './memory.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
+import { ensureWorkspace } from './startup.js';
 
 const PID_FILE = path.join(STORE_DIR, 'claudeclaw.pid');
 
@@ -47,6 +48,7 @@ function releaseLock(): void {
 async function main(): Promise<void> {
   showBanner();
   checkPendingMigrations(PROJECT_ROOT);
+  ensureWorkspace(CLAUDECLAW_CONFIG, CLAUDECLAW_WORKSPACE, PROJECT_ROOT);
 
   if (!TELEGRAM_BOT_TOKEN) {
     logger.error('TELEGRAM_BOT_TOKEN is not set. Add it to .env and restart.');
@@ -89,8 +91,11 @@ async function main(): Promise<void> {
       setTelegramConnected(true);
       setBotInfo(botInfo.username ?? '', botInfo.first_name ?? 'ClaudeClaw');
       logger.info({ username: botInfo.username }, 'ClaudeClaw is running');
-      console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
-      console.log(`  Send /chatid to get your chat ID for ALLOWED_CHAT_ID\n`);
+      console.log(`\n  ClaudeClaw online: @${botInfo.username}\n`);
+
+      if (!ALLOWED_CHAT_ID) {
+        console.log(`  Send /chatid to get your chat ID for ALLOWED_CHAT_ID in .env file\n`);
+      }
     },
   });
 }
