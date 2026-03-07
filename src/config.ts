@@ -17,6 +17,32 @@ const envConfig = readEnvFile([
   'DASHBOARD_URL',
 ]);
 
+// ── Multi-agent support ──────────────────────────────────────────────
+// These are mutable and overridden by index.ts when --agent is passed.
+export let AGENT_ID = 'main';
+export let activeBotToken =
+  process.env.TELEGRAM_BOT_TOKEN || envConfig.TELEGRAM_BOT_TOKEN || '';
+export let agentCwd: string | undefined; // undefined = use PROJECT_ROOT
+export let agentDefaultModel: string | undefined; // from agent.yaml
+export let agentObsidianConfig: { vault: string; folders: string[]; readOnly?: string[] } | undefined;
+export let agentSystemPrompt: string | undefined; // loaded from agents/{id}/CLAUDE.md
+
+export function setAgentOverrides(opts: {
+  agentId: string;
+  botToken: string;
+  cwd: string;
+  model?: string;
+  obsidian?: { vault: string; folders: string[]; readOnly?: string[] };
+  systemPrompt?: string;
+}): void {
+  AGENT_ID = opts.agentId;
+  activeBotToken = opts.botToken;
+  agentCwd = opts.cwd;
+  agentDefaultModel = opts.model;
+  agentObsidianConfig = opts.obsidian;
+  agentSystemPrompt = opts.systemPrompt;
+}
+
 export const TELEGRAM_BOT_TOKEN =
   process.env.TELEGRAM_BOT_TOKEN || envConfig.TELEGRAM_BOT_TOKEN || '';
 

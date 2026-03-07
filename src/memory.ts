@@ -1,3 +1,4 @@
+import { agentObsidianConfig } from './config.js';
 import {
   decayMemories,
   getRecentMemories,
@@ -7,6 +8,7 @@ import {
   searchMemories,
   touchMemory,
 } from './db.js';
+import { buildObsidianContext } from './obsidian.js';
 
 const SEMANTIC_SIGNALS = /\b(my|i am|i'm|i prefer|remember|always|never)\b/i;
 
@@ -42,9 +44,14 @@ export async function buildMemoryContext(
     lines.push(`- ${mem.content} (${mem.sector})`);
   }
 
-  if (lines.length === 0) return '';
+  if (lines.length === 0 && !agentObsidianConfig) return '';
 
-  return `[Memory context]\n${lines.join('\n')}\n[End memory context]`;
+  const memBlock = lines.length > 0
+    ? `[Memory context]\n${lines.join('\n')}\n[End memory context]`
+    : '';
+  const obsidianBlock = buildObsidianContext(agentObsidianConfig);
+
+  return [memBlock, obsidianBlock].filter(Boolean).join('\n\n');
 }
 
 /**
@@ -63,18 +70,28 @@ export function saveConversationTurn(
   userMessage: string,
   claudeResponse: string,
   sessionId?: string,
+  agentId = 'main',
 ): void {
-  // Always log full conversation to conversation_log (for /respin)
-  logConversationTurn(chatId, 'user', userMessage, sessionId);
-  logConversationTurn(chatId, 'assistant', claudeResponse, sessionId);
+  try {
+    // Always log full conversation to conversation_log (for /respin)
+    logConversationTurn(chatId, 'user', userMessage, sessionId, agentId);
+    logConversationTurn(chatId, 'assistant', claudeResponse, sessionId, agentId);
+  } catch (err) {
+    // DB write failure should not crash the bot
+    console.error('Failed to log conversation turn:', err);
+  }
 
   // Skip short or command-like messages for memory extraction
   if (userMessage.length <= 20 || userMessage.startsWith('/')) return;
 
-  if (SEMANTIC_SIGNALS.test(userMessage)) {
-    saveMemory(chatId, userMessage, 'semantic');
-  } else {
-    saveMemory(chatId, userMessage, 'episodic');
+  try {
+    if (SEMANTIC_SIGNALS.test(userMessage)) {
+      saveMemory(chatId, userMessage, 'semantic');
+    } else {
+      saveMemory(chatId, userMessage, 'episodic');
+    }
+  } catch (err) {
+    console.error('Failed to save memory:', err);
   }
 }
 

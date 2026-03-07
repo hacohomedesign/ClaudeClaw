@@ -107,6 +107,20 @@ export function getDashboardHtml(token: string, chatId: string): string {
 </div>
 <div id="bot-info" class="flex items-center gap-3 mb-4 text-xs text-gray-500"></div>
 
+<!-- Agent Status Cards -->
+<div id="agents-section" class="mb-5" style="display:none">
+  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Agents</h2>
+  <div id="agents-container" class="flex flex-wrap gap-3"></div>
+</div>
+
+<!-- Hive Mind Feed -->
+<div id="hive-section" class="mb-5" style="display:none">
+  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Hive Mind</h2>
+  <div id="hive-container" class="card" style="max-height:240px;overflow-y:auto">
+    <div class="text-gray-500 text-sm">Loading...</div>
+  </div>
+</div>
+
 <!-- Desktop: 2-column grid. Mobile: stacked. -->
 <div class="lg:grid lg:grid-cols-2 lg:gap-6">
 
@@ -242,8 +256,8 @@ export function getDashboardHtml(token: string, chatId: string): string {
 </div>
 
 <script>
-const TOKEN = \${JSON.stringify(token)};
-const CHAT_ID = \${JSON.stringify(chatId)};
+const TOKEN = ${JSON.stringify(token)};
+const CHAT_ID = ${JSON.stringify(chatId)};
 const BASE = location.origin;
 
 // Device detection
@@ -373,6 +387,17 @@ function countdown(ts) {
   return Math.floor(diff/86400) + 'd';
 }
 
+async function taskAction(id, action) {
+  try {
+    if (action === 'delete') {
+      await fetch(BASE + '/api/tasks/' + id + '?token=' + TOKEN, { method: 'DELETE' });
+    } else {
+      await fetch(BASE + '/api/tasks/' + id + '/' + action + '?token=' + TOKEN, { method: 'POST' });
+    }
+    await loadTasks();
+  } catch(e) { console.error('Task action failed:', e); }
+}
+
 async function loadTasks() {
   try {
     const data = await api('/api/tasks');
@@ -383,8 +408,13 @@ async function loadTasks() {
     }
     c.innerHTML = data.tasks.map(t => {
       const statusCls = t.status === 'active' ? 'pill-active' : 'pill-paused';
+      const agentBadge = t.agent_id && t.agent_id !== 'main' ? '<span class="text-xs text-gray-500 ml-2">[' + t.agent_id + ']</span>' : '';
       const lastResult = t.last_result ? '<details class="mt-2"><summary class="text-xs text-gray-500">Last result</summary><pre class="text-xs text-gray-400 mt-1 whitespace-pre-wrap break-words">' + escapeHtml(t.last_result) + '</pre></details>' : '';
-      return '<div class="card"><div class="flex justify-between items-start"><div class="flex-1 mr-2"><div class="text-sm text-white">' + escapeHtml(t.prompt) + '</div><div class="text-xs text-gray-500 mt-1">' + cronToHuman(t.schedule) + ' &middot; next in <span class="countdown" data-ts="' + t.next_run + '">' + countdown(t.next_run) + '</span></div></div><span class="pill ' + statusCls + '">' + t.status + '</span></div>' + lastResult + '</div>';
+      const pauseBtn = t.status === 'active'
+        ? '<button data-task="' + t.id + '" data-action="pause" onclick="taskAction(this.dataset.task,this.dataset.action)" title="Pause" style="background:none;border:none;cursor:pointer;color:#fbbf24;font-size:14px;padding:2px 4px">&#9208;</button>'
+        : '<button data-task="' + t.id + '" data-action="resume" onclick="taskAction(this.dataset.task,this.dataset.action)" title="Resume" style="background:none;border:none;cursor:pointer;color:#6ee7b7;font-size:14px;padding:2px 4px">&#9654;</button>';
+      const deleteBtn = '<button data-task="' + t.id + '" data-action="delete" onclick="taskAction(this.dataset.task,this.dataset.action)" title="Delete" style="background:none;border:none;cursor:pointer;color:#f87171;font-size:14px;padding:2px 4px">&times;</button>';
+      return '<div class="card"><div class="flex justify-between items-start"><div class="flex-1 mr-2"><div class="text-sm text-white">' + escapeHtml(t.prompt) + agentBadge + '</div><div class="text-xs text-gray-500 mt-1">' + cronToHuman(t.schedule) + ' &middot; next in <span class="countdown" data-ts="' + t.next_run + '">' + countdown(t.next_run) + '</span></div></div><div class="flex items-center gap-1">' + pauseBtn + deleteBtn + '<span class="pill ' + statusCls + '">' + t.status + '</span></div></div>' + lastResult + '</div>';
     }).join('');
   } catch(e) {
     document.getElementById('tasks-container').innerHTML = '<div class="card text-red-400 text-sm">Failed to load tasks</div>';
@@ -560,10 +590,99 @@ document.addEventListener('click', function(e) {
   document.querySelectorAll('.info-tip.active').forEach(t => t.classList.remove('active'));
 }, true);
 
+// ── Agent & Hive Mind ────────────────────────────────────────────────
+const AGENT_COLORS = { main: '#4f46e5', comms: '#0ea5e9', content: '#f59e0b', ops: '#10b981', research: '#8b5cf6' };
+
+async function loadAgents() {
+  try {
+    const data = await api('/api/agents');
+    const section = document.getElementById('agents-section');
+    const container = document.getElementById('agents-container');
+    if (!data.agents || data.agents.length <= 1) { section.style.display = 'none'; return; }
+    section.style.display = '';
+    container.innerHTML = data.agents.map(a => {
+      const color = AGENT_COLORS[a.id] || '#6b7280';
+      const dot = a.running ? '<span style="color:#6ee7b7">\u25CF</span>' : '<span style="color:#666">\u25CB</span>';
+      const statusText = a.running ? 'live' : 'off';
+      const modelShort = (a.model || '').replace('claude-', '').replace(/-\d+.*/, '');
+      return '<div class="card clickable-card" style="min-width:130px;flex:1;max-width:220px;border-left:3px solid ' + color + '" data-agent="' + a.id + '" onclick="toggleAgentDetail(this.dataset.agent)">' +
+        '<div class="font-bold text-white text-sm">' + a.name + '</div>' +
+        '<div class="text-xs mt-1">' + dot + ' ' + statusText + '</div>' +
+        '<div class="text-xs text-gray-500">' + modelShort + '</div>' +
+        (a.running ? '<div class="text-xs text-gray-400 mt-1">' + a.todayTurns + ' turns &middot; $' + (a.todayCost||0).toFixed(2) + '</div>' : '') +
+        '<div id="agent-detail-' + a.id + '" style="display:none" class="mt-2 pt-2" style="border-top:1px solid #333"></div>' +
+      '</div>';
+    }).join('');
+  } catch {}
+}
+
+async function toggleAgentDetail(agentId) {
+  const el = document.getElementById('agent-detail-' + agentId);
+  if (!el) return;
+  if (el.style.display !== 'none') { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.innerHTML = '<div class="text-xs text-gray-500">Loading...</div>';
+  try {
+    const [tasks, hive, convo] = await Promise.all([
+      api('/api/agents/' + agentId + '/tasks'),
+      api('/api/hive-mind?agent=' + agentId + '&limit=5'),
+      api('/api/agents/' + agentId + '/conversation?chatId=' + CHAT_ID + '&limit=4'),
+    ]);
+    let html = '';
+    // Last conversation
+    if (convo.turns && convo.turns.length > 0) {
+      html += '<div class="text-xs text-gray-400 font-semibold mb-1" style="border-top:1px solid #333;padding-top:8px">Last conversation</div>';
+      const sorted = convo.turns.slice().reverse();
+      html += sorted.map(t => {
+        const role = t.role === 'user' ? '<span style="color:#818cf8">You</span>' : '<span style="color:#6ee7b7">Agent</span>';
+        const text = t.content.length > 120 ? t.content.slice(0, 120) + '...' : t.content;
+        return '<div class="text-xs text-gray-400 mt-1">' + role + ': ' + escapeHtml(text) + '</div>';
+      }).join('');
+    }
+    // Hive mind
+    if (hive.entries && hive.entries.length > 0) {
+      html += '<div class="text-xs text-gray-400 font-semibold mt-2 mb-1" style="border-top:1px solid #333;padding-top:8px">Hive mind</div>';
+      html += hive.entries.map(e => {
+        const time = new Date(e.created_at * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+        return '<div class="text-xs text-gray-400">' + time + ' ' + e.action + ' — ' + e.summary + '</div>';
+      }).join('');
+    }
+    // Tasks
+    if (tasks.tasks && tasks.tasks.length > 0) {
+      html += '<div class="text-xs text-gray-400 font-semibold mt-2 mb-1" style="border-top:1px solid #333;padding-top:8px">Scheduled (' + tasks.tasks.length + ')</div>';
+      html += tasks.tasks.slice(0, 3).map(t =>
+        '<div class="text-xs text-gray-500">' + t.prompt.slice(0, 60) + (t.prompt.length > 60 ? '...' : '') + '</div>'
+      ).join('');
+    }
+    if (!html) html = '<div class="text-xs text-gray-500">No activity yet</div>';
+    el.innerHTML = html;
+  } catch { el.innerHTML = '<div class="text-xs text-red-400">Failed to load</div>'; }
+}
+
+async function loadHiveMind() {
+  try {
+    const data = await api('/api/hive-mind?limit=15');
+    const section = document.getElementById('hive-section');
+    const container = document.getElementById('hive-container');
+    if (!data.entries || data.entries.length === 0) { section.style.display = 'none'; return; }
+    section.style.display = '';
+    container.innerHTML = data.entries.map(e => {
+      const time = new Date(e.created_at * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+      const color = AGENT_COLORS[e.agent_id] || '#6b7280';
+      return '<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px solid #222">' +
+        '<span class="text-xs text-gray-500" style="min-width:42px">' + time + '</span>' +
+        '<span class="text-xs font-semibold" style="color:' + color + ';min-width:60px">' + e.agent_id + '</span>' +
+        '<span class="text-xs text-gray-400" style="min-width:80px">' + e.action + '</span>' +
+        '<span class="text-xs text-gray-300" style="flex:1">' + e.summary + '</span>' +
+      '</div>';
+    }).join('');
+  } catch {}
+}
+
 async function refreshAll() {
   const btn = document.getElementById('refresh-btn').querySelector('svg');
   btn.classList.add('refresh-spin');
-  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens()]);
+  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind()]);
   btn.classList.remove('refresh-spin');
   document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 }

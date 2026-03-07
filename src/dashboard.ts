@@ -3,9 +3,14 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { serve } from '@hono/node-server';
 
-import { ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT } from './config.js';
+import fs from 'fs';
+import path from 'path';
+import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT } from './config.js';
 import {
   getAllScheduledTasks,
+  deleteScheduledTask,
+  pauseScheduledTask,
+  resumeScheduledTask,
   getConversationPage,
   getDashboardMemoryStats,
   getDashboardLowSalienceMemories,
@@ -17,7 +22,11 @@ import {
   getDashboardMemoriesBySector,
   getSession,
   getSessionTokenUsage,
+  getHiveMindEntries,
+  getAgentTokenStats,
+  getAgentRecentConversation,
 } from './db.js';
+import { listAgentIds, loadAgentConfig } from './agent-config.js';
 import { processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { logger } from './logger.js';
@@ -31,10 +40,25 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
   const app = new Hono();
 
+  // CORS headers for cross-origin access (Cloudflare tunnel, mobile browsers)
+  app.use('*', async (c, next) => {
+    c.header('Access-Control-Allow-Origin', '*');
+    c.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    c.header('Access-Control-Allow-Headers', 'Content-Type');
+    if (c.req.method === 'OPTIONS') return c.body(null, 204);
+    await next();
+  });
+
+  // Global error handler — prevents unhandled throws from killing the server
+  app.onError((err, c) => {
+    logger.error({ err: err.message }, 'Dashboard request error');
+    return c.json({ error: 'Internal server error' }, 500);
+  });
+
   // Token auth middleware
   app.use('*', async (c, next) => {
     const token = c.req.query('token');
-    if (token !== DASHBOARD_TOKEN) {
+    if (!DASHBOARD_TOKEN || !token || token !== DASHBOARD_TOKEN) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
     await next();
@@ -50,6 +74,27 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   app.get('/api/tasks', (c) => {
     const tasks = getAllScheduledTasks();
     return c.json({ tasks });
+  });
+
+  // Delete a scheduled task
+  app.delete('/api/tasks/:id', (c) => {
+    const id = c.req.param('id');
+    deleteScheduledTask(id);
+    return c.json({ ok: true });
+  });
+
+  // Pause a scheduled task
+  app.post('/api/tasks/:id/pause', (c) => {
+    const id = c.req.param('id');
+    pauseScheduledTask(id);
+    return c.json({ ok: true });
+  });
+
+  // Resume a scheduled task
+  app.post('/api/tasks/:id/resume', (c) => {
+    const id = c.req.param('id');
+    resumeScheduledTask(id);
+    return c.json({ ok: true });
   });
 
   // Memory stats
@@ -125,6 +170,89 @@ export function startDashboard(botApi?: Api<RawApi>): void {
       pid: process.pid,
       chatId: chatId || null,
     });
+  });
+
+  // ── Agent endpoints ──────────────────────────────────────────────────
+
+  // List all configured agents with status
+  app.get('/api/agents', (c) => {
+    const agentIds = listAgentIds();
+    const agents = agentIds.map((id) => {
+      try {
+        const config = loadAgentConfig(id);
+        // Check if agent process is alive via PID file
+        const pidFile = path.join(STORE_DIR, `agent-${id}.pid`);
+        let running = false;
+        if (fs.existsSync(pidFile)) {
+          try {
+            const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+            process.kill(pid, 0); // signal 0 = check if alive
+            running = true;
+          } catch { /* process not running */ }
+        }
+        const stats = getAgentTokenStats(id);
+        return {
+          id,
+          name: config.name,
+          description: config.description,
+          model: config.model ?? 'claude-opus-4-6',
+          running,
+          todayTurns: stats.todayTurns,
+          todayCost: stats.todayCost,
+        };
+      } catch {
+        return { id, name: id, description: '', model: 'unknown', running: false, todayTurns: 0, todayCost: 0 };
+      }
+    });
+
+    // Include main bot too
+    const mainPidFile = path.join(STORE_DIR, 'claudeclaw.pid');
+    let mainRunning = false;
+    if (fs.existsSync(mainPidFile)) {
+      try {
+        const pid = parseInt(fs.readFileSync(mainPidFile, 'utf-8').trim(), 10);
+        process.kill(pid, 0);
+        mainRunning = true;
+      } catch { /* not running */ }
+    }
+    const mainStats = getAgentTokenStats('main');
+    const allAgents = [
+      { id: 'main', name: 'Main', description: 'Primary ClaudeClaw bot', model: 'claude-opus-4-6', running: mainRunning, todayTurns: mainStats.todayTurns, todayCost: mainStats.todayCost },
+      ...agents,
+    ];
+
+    return c.json({ agents: allAgents });
+  });
+
+  // Agent-specific recent conversation
+  app.get('/api/agents/:id/conversation', (c) => {
+    const agentId = c.req.param('id');
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
+    const limit = parseInt(c.req.query('limit') || '4', 10);
+    const turns = getAgentRecentConversation(agentId, chatId, limit);
+    return c.json({ turns });
+  });
+
+  // Agent-specific tasks
+  app.get('/api/agents/:id/tasks', (c) => {
+    const agentId = c.req.param('id');
+    const tasks = getAllScheduledTasks(agentId);
+    return c.json({ tasks });
+  });
+
+  // Agent-specific token stats
+  app.get('/api/agents/:id/tokens', (c) => {
+    const agentId = c.req.param('id');
+    const stats = getAgentTokenStats(agentId);
+    return c.json(stats);
+  });
+
+  // Hive mind feed
+  app.get('/api/hive-mind', (c) => {
+    const agentId = c.req.query('agent');
+    const limit = parseInt(c.req.query('limit') || '20', 10);
+    const entries = getHiveMindEntries(limit, agentId || undefined);
+    return c.json({ entries });
   });
 
   // ── Chat endpoints ─────────────────────────────────────────────────

@@ -22,9 +22,11 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_tasks_next_run ON scheduled_tasks(status, next_run);
 
     CREATE TABLE IF NOT EXISTS sessions (
-      chat_id   TEXT PRIMARY KEY,
+      chat_id    TEXT NOT NULL,
+      agent_id   TEXT NOT NULL DEFAULT 'main',
       session_id TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (chat_id, agent_id)
     );
 
     CREATE TABLE IF NOT EXISTS memories (
@@ -110,6 +112,19 @@ function createSchema(database: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_slack_messages_channel ON slack_messages(channel_id, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS hive_mind (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id    TEXT NOT NULL,
+      chat_id     TEXT NOT NULL,
+      action      TEXT NOT NULL,
+      summary     TEXT NOT NULL,
+      artifacts   TEXT,
+      created_at  INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_hive_mind_agent ON hive_mind(agent_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_hive_mind_time ON hive_mind(created_at DESC);
+
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       content,
       content=memories,
@@ -148,6 +163,42 @@ function runMigrations(database: Database.Database): void {
   if (!hasContextTokens) {
     database.exec(`ALTER TABLE token_usage ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0`);
   }
+
+  // Multi-agent: migrate sessions table to composite primary key (chat_id, agent_id)
+  // Check if PK is composite by looking at pk column count in pragma
+  const sessionCols = database.prepare(`PRAGMA table_info(sessions)`).all() as Array<{ name: string; pk: number }>;
+  const pkCount = sessionCols.filter((c) => c.pk > 0).length;
+  if (pkCount < 2) {
+    // Need to recreate table with composite PK
+    database.exec(`
+      CREATE TABLE sessions_new (
+        chat_id    TEXT NOT NULL,
+        agent_id   TEXT NOT NULL DEFAULT 'main',
+        session_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (chat_id, agent_id)
+      );
+      INSERT OR IGNORE INTO sessions_new (chat_id, agent_id, session_id, updated_at)
+        SELECT chat_id, COALESCE(agent_id, 'main'), session_id, updated_at FROM sessions;
+      DROP TABLE sessions;
+      ALTER TABLE sessions_new RENAME TO sessions;
+    `);
+  }
+
+  const taskCols = database.prepare(`PRAGMA table_info(scheduled_tasks)`).all() as Array<{ name: string }>;
+  if (!taskCols.some((c) => c.name === 'agent_id')) {
+    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'`);
+  }
+
+  const usageCols = database.prepare(`PRAGMA table_info(token_usage)`).all() as Array<{ name: string }>;
+  if (!usageCols.some((c) => c.name === 'agent_id')) {
+    database.exec(`ALTER TABLE token_usage ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'`);
+  }
+
+  const convoCols = database.prepare(`PRAGMA table_info(conversation_log)`).all() as Array<{ name: string }>;
+  if (!convoCols.some((c) => c.name === 'agent_id')) {
+    database.exec(`ALTER TABLE conversation_log ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'`);
+  }
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
@@ -155,23 +206,24 @@ export function _initTestDatabase(): void {
   db = new Database(':memory:');
   db.pragma('journal_mode = WAL');
   createSchema(db);
+  runMigrations(db);
 }
 
-export function getSession(chatId: string): string | undefined {
+export function getSession(chatId: string, agentId = 'main'): string | undefined {
   const row = db
-    .prepare('SELECT session_id FROM sessions WHERE chat_id = ?')
-    .get(chatId) as { session_id: string } | undefined;
+    .prepare('SELECT session_id FROM sessions WHERE chat_id = ? AND agent_id = ?')
+    .get(chatId, agentId) as { session_id: string } | undefined;
   return row?.session_id;
 }
 
-export function setSession(chatId: string, sessionId: string): void {
+export function setSession(chatId: string, sessionId: string, agentId = 'main'): void {
   db.prepare(
-    'INSERT OR REPLACE INTO sessions (chat_id, session_id, updated_at) VALUES (?, ?, ?)',
-  ).run(chatId, sessionId, new Date().toISOString());
+    'INSERT OR REPLACE INTO sessions (chat_id, agent_id, session_id, updated_at) VALUES (?, ?, ?, ?)',
+  ).run(chatId, agentId, sessionId, new Date().toISOString());
 }
 
-export function clearSession(chatId: string): void {
-  db.prepare('DELETE FROM sessions WHERE chat_id = ?').run(chatId);
+export function clearSession(chatId: string, agentId = 'main'): void {
+  db.prepare('DELETE FROM sessions WHERE chat_id = ? AND agent_id = ?').run(chatId, agentId);
 }
 
 // ── Memory ──────────────────────────────────────────────────────────
@@ -269,24 +321,30 @@ export function createScheduledTask(
   prompt: string,
   schedule: string,
   nextRun: number,
+  agentId = 'main',
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
-    `INSERT INTO scheduled_tasks (id, prompt, schedule, next_run, status, created_at)
-     VALUES (?, ?, ?, ?, 'active', ?)`,
-  ).run(id, prompt, schedule, nextRun, now);
+    `INSERT INTO scheduled_tasks (id, prompt, schedule, next_run, status, created_at, agent_id)
+     VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+  ).run(id, prompt, schedule, nextRun, now, agentId);
 }
 
-export function getDueTasks(): ScheduledTask[] {
+export function getDueTasks(agentId = 'main'): ScheduledTask[] {
   const now = Math.floor(Date.now() / 1000);
   return db
     .prepare(
-      `SELECT * FROM scheduled_tasks WHERE status = 'active' AND next_run <= ? ORDER BY next_run`,
+      `SELECT * FROM scheduled_tasks WHERE status = 'active' AND next_run <= ? AND agent_id = ? ORDER BY next_run`,
     )
-    .all(now) as ScheduledTask[];
+    .all(now, agentId) as ScheduledTask[];
 }
 
-export function getAllScheduledTasks(): ScheduledTask[] {
+export function getAllScheduledTasks(agentId?: string): ScheduledTask[] {
+  if (agentId) {
+    return db
+      .prepare('SELECT * FROM scheduled_tasks WHERE agent_id = ? ORDER BY created_at DESC')
+      .all(agentId) as ScheduledTask[];
+  }
   return db
     .prepare('SELECT * FROM scheduled_tasks ORDER BY created_at DESC')
     .all() as ScheduledTask[];
@@ -390,12 +448,13 @@ export function logConversationTurn(
   role: 'user' | 'assistant',
   content: string,
   sessionId?: string,
+  agentId = 'main',
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
-    `INSERT INTO conversation_log (chat_id, session_id, role, content, created_at)
-     VALUES (?, ?, ?, ?, ?)`,
-  ).run(chatId, sessionId ?? null, role, content, now);
+    `INSERT INTO conversation_log (chat_id, session_id, role, content, created_at, agent_id)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(chatId, sessionId ?? null, role, content, now, agentId);
 }
 
 export function getRecentConversation(
@@ -527,12 +586,13 @@ export function saveTokenUsage(
   contextTokens: number,
   costUsd: number,
   didCompact: boolean,
+  agentId = 'main',
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
-    `INSERT INTO token_usage (chat_id, session_id, input_tokens, output_tokens, cache_read, context_tokens, cost_usd, did_compact, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(chatId, sessionId ?? null, inputTokens, outputTokens, cacheRead, contextTokens, costUsd, didCompact ? 1 : 0, now);
+    `INSERT INTO token_usage (chat_id, session_id, input_tokens, output_tokens, cache_read, context_tokens, cost_usd, did_compact, created_at, agent_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(chatId, sessionId ?? null, inputTokens, outputTokens, cacheRead, contextTokens, costUsd, didCompact ? 1 : 0, now, agentId);
 }
 
 export interface SessionTokenSummary {
@@ -711,6 +771,68 @@ export function getDashboardMemoriesBySector(chatId: string, sector: string, lim
     )
     .all(chatId, sector, limit, offset) as Memory[];
   return { memories, total: total.cnt };
+}
+
+// ── Hive Mind ──────────────────────────────────────────────────────
+
+export interface HiveMindEntry {
+  id: number;
+  agent_id: string;
+  chat_id: string;
+  action: string;
+  summary: string;
+  artifacts: string | null;
+  created_at: number;
+}
+
+export function logToHiveMind(
+  agentId: string,
+  chatId: string,
+  action: string,
+  summary: string,
+  artifacts?: string,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO hive_mind (agent_id, chat_id, action, summary, artifacts, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(agentId, chatId, action, summary, artifacts ?? null, now);
+}
+
+export function getHiveMindEntries(limit = 20, agentId?: string): HiveMindEntry[] {
+  if (agentId) {
+    return db
+      .prepare('SELECT * FROM hive_mind WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?')
+      .all(agentId, limit) as HiveMindEntry[];
+  }
+  return db
+    .prepare('SELECT * FROM hive_mind ORDER BY created_at DESC LIMIT ?')
+    .all(limit) as HiveMindEntry[];
+}
+
+export function getAgentTokenStats(agentId: string): { todayCost: number; todayTurns: number; allTimeCost: number } {
+  const today = db
+    .prepare(
+      `SELECT COALESCE(SUM(cost_usd), 0) as todayCost, COUNT(*) as todayTurns
+       FROM token_usage
+       WHERE agent_id = ? AND created_at >= unixepoch('now', 'start of day')`,
+    )
+    .get(agentId) as { todayCost: number; todayTurns: number };
+
+  const allTime = db
+    .prepare('SELECT COALESCE(SUM(cost_usd), 0) as allTimeCost FROM token_usage WHERE agent_id = ?')
+    .get(agentId) as { allTimeCost: number };
+
+  return { ...today, allTimeCost: allTime.allTimeCost };
+}
+
+export function getAgentRecentConversation(agentId: string, chatId: string, limit = 4): ConversationTurn[] {
+  return db
+    .prepare(
+      `SELECT * FROM conversation_log WHERE agent_id = ? AND chat_id = ?
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(agentId, chatId, limit) as ConversationTurn[];
 }
 
 export function getSessionTokenUsage(sessionId: string): SessionTokenSummary | null {

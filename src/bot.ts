@@ -3,13 +3,16 @@ import { Api, Bot, Context, InputFile, RawApi } from 'grammy';
 
 import { runAgent, UsageInfo, AgentProgressEvent } from './agent.js';
 import {
+  AGENT_ID,
   ALLOWED_CHAT_ID,
   CONTEXT_LIMIT,
   DASHBOARD_PORT,
   DASHBOARD_TOKEN,
   DASHBOARD_URL,
   MAX_MESSAGE_LENGTH,
-  TELEGRAM_BOT_TOKEN,
+  activeBotToken,
+  agentDefaultModel,
+  agentSystemPrompt,
   TYPING_REFRESH_MS,
 } from './config.js';
 import { clearSession, getRecentConversation, getRecentMemories, getSession, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
@@ -312,9 +315,13 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
   // Build memory context and prepend to message
   const memCtx = await buildMemoryContext(chatIdStr, message);
-  const fullMessage = memCtx ? `${memCtx}\n\n${message}` : message;
+  const parts: string[] = [];
+  if (agentSystemPrompt) parts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
+  if (memCtx) parts.push(memCtx);
+  parts.push(message);
+  const fullMessage = parts.join('\n\n');
 
-  const sessionId = getSession(chatIdStr);
+  const sessionId = getSession(chatIdStr, AGENT_ID);
 
   // Start typing immediately, then refresh on interval
   await sendTyping(ctx.api, chatId);
@@ -348,7 +355,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       sessionId,
       () => void sendTyping(ctx.api, chatId),
       onProgress,
-      chatModelOverride.get(chatIdStr),
+      chatModelOverride.get(chatIdStr) ?? agentDefaultModel,
       abortCtrl,
     );
 
@@ -364,7 +371,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     }
 
     if (result.newSessionId) {
-      setSession(chatIdStr, result.newSessionId);
+      setSession(chatIdStr, result.newSessionId, AGENT_ID);
       logger.info({ newSessionId: result.newSessionId }, 'Session saved');
     }
 
@@ -376,7 +383,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     // Save conversation turn to memory (including full log).
     // Skip logging for synthetic messages like /respin to avoid self-referential growth.
     if (!skipLog) {
-      saveConversationTurn(chatIdStr, message, rawResponse, result.newSessionId ?? sessionId);
+      saveConversationTurn(chatIdStr, message, rawResponse, result.newSessionId ?? sessionId, AGENT_ID);
     }
 
     // Emit assistant response to SSE clients
@@ -428,16 +435,21 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     // Log token usage to SQLite and check for context warnings
     if (result.usage) {
       const activeSessionId = result.newSessionId ?? sessionId;
-      saveTokenUsage(
-        chatIdStr,
-        activeSessionId,
-        result.usage.inputTokens,
-        result.usage.outputTokens,
-        result.usage.lastCallCacheRead,
-        result.usage.lastCallInputTokens,
-        result.usage.totalCostUsd,
-        result.usage.didCompact,
-      );
+      try {
+        saveTokenUsage(
+          chatIdStr,
+          activeSessionId,
+          result.usage.inputTokens,
+          result.usage.outputTokens,
+          result.usage.lastCallCacheRead,
+          result.usage.lastCallInputTokens,
+          result.usage.totalCostUsd,
+          result.usage.didCompact,
+          AGENT_ID,
+        );
+      } catch (dbErr) {
+        logger.error({ err: dbErr }, 'Failed to save token usage');
+      }
 
       const warning = checkContextWarning(chatIdStr, activeSessionId, result.usage);
       if (warning) {
@@ -457,12 +469,15 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     if (errMsg.includes('exited with code 1')) {
       const usage = lastUsage.get(chatIdStr);
       const contextSize = usage?.lastCallInputTokens || usage?.lastCallCacheRead || 0;
-      const hint = contextSize > 0
-        ? `Last known context: ~${Math.round(contextSize / 1000)}k tokens.`
-        : 'No usage data from previous turns.';
-      await ctx.reply(
-        `Context window likely exhausted. ${hint}\n\nUse /newchat to start fresh, then /respin to pull recent conversation back in.`,
-      );
+      if (contextSize > 0) {
+        // We have prior usage data — context exhaustion is plausible
+        await ctx.reply(
+          `Context window likely exhausted. Last known context: ~${Math.round(contextSize / 1000)}k tokens.\n\nUse /newchat to start fresh, then /respin to pull recent conversation back in.`,
+        );
+      } else {
+        // No prior usage — likely a subprocess init failure, not context exhaustion
+        await ctx.reply('Claude Code subprocess failed to start. Check logs or try /newchat.');
+      }
     } else {
       await ctx.reply('Something went wrong. Check the logs and try again.');
     }
@@ -470,11 +485,12 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 }
 
 export function createBot(): Bot {
-  if (!TELEGRAM_BOT_TOKEN) {
-    throw new Error('TELEGRAM_BOT_TOKEN is not set in .env');
+  const token = activeBotToken;
+  if (!token) {
+    throw new Error('Bot token is not set. Check .env or agent config.');
   }
 
-  const bot = new Bot(TELEGRAM_BOT_TOKEN);
+  const bot = new Bot(token);
 
   // Register commands in the Telegram menu
   bot.api.setMyCommands([
@@ -513,14 +529,18 @@ export function createBot(): Bot {
 
   // /chatid — get the chat ID (used during first-time setup)
   // Responds to anyone only when ALLOWED_CHAT_ID is not yet configured.
+  // /chatid — only responds when ALLOWED_CHAT_ID is not yet configured (first-time setup)
   bot.command('chatid', (ctx) => {
-    if (ALLOWED_CHAT_ID && !isAuthorised(ctx.chat!.id)) return;
+    if (ALLOWED_CHAT_ID) return; // Already configured — don't respond to anyone
     return ctx.reply(`Your chat ID: ${ctx.chat!.id}`);
   });
 
   // /start — simple greeting (auth-gated after setup)
   bot.command('start', (ctx) => {
     if (ALLOWED_CHAT_ID && !isAuthorised(ctx.chat!.id)) return;
+    if (AGENT_ID !== 'main') {
+      return ctx.reply(`${AGENT_ID.charAt(0).toUpperCase() + AGENT_ID.slice(1)} agent online.`);
+    }
     return ctx.reply('ClaudeClaw online. What do you need?');
   });
 
@@ -528,8 +548,8 @@ export function createBot(): Bot {
   bot.command('newchat', async (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
     const chatIdStr = ctx.chat!.id.toString();
-    const oldSessionId = getSession(chatIdStr);
-    clearSession(chatIdStr);
+    const oldSessionId = getSession(chatIdStr, AGENT_ID);
+    clearSession(chatIdStr, AGENT_ID);
     // Clear context baseline so next session starts clean
     if (oldSessionId) sessionBaseline.delete(oldSessionId);
     sessionBaseline.delete(chatIdStr);
@@ -630,7 +650,7 @@ export function createBot(): Bot {
   // /forget — clear session (memory decay handles the rest)
   bot.command('forget', async (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
-    clearSession(ctx.chat!.id.toString());
+    clearSession(ctx.chat!.id.toString(), AGENT_ID);
     await ctx.reply('Session cleared. Memories will fade naturally over time.');
   });
 
@@ -913,7 +933,7 @@ export function createBot(): Bot {
     const typingInterval = setInterval(() => void sendTyping(ctx.api, chatId), TYPING_REFRESH_MS);
     try {
       const fileId = ctx.message.voice.file_id;
-      const localPath = await downloadTelegramFile(TELEGRAM_BOT_TOKEN, fileId, UPLOADS_DIR);
+      const localPath = await downloadTelegramFile(activeBotToken, fileId, UPLOADS_DIR);
       const transcribed = await transcribeAudio(localPath);
       clearInterval(typingInterval);
       // Only reply with voice if explicitly requested — otherwise execute and respond in text
@@ -941,7 +961,7 @@ export function createBot(): Bot {
     const typingInterval = setInterval(() => void sendTyping(ctx.api, chatId), TYPING_REFRESH_MS);
     try {
       const photo = ctx.message.photo[ctx.message.photo.length - 1];
-      const localPath = await downloadMedia(TELEGRAM_BOT_TOKEN, photo.file_id, 'photo.jpg');
+      const localPath = await downloadMedia(activeBotToken, photo.file_id, 'photo.jpg');
       clearInterval(typingInterval);
       const msg = buildPhotoMessage(localPath, ctx.message.caption ?? undefined);
       handleMessage(ctx, msg).catch((err) => logger.error({ err }, 'Unhandled photo message error'));
@@ -968,7 +988,7 @@ export function createBot(): Bot {
     try {
       const doc = ctx.message.document;
       const filename = doc.file_name ?? 'file';
-      const localPath = await downloadMedia(TELEGRAM_BOT_TOKEN, doc.file_id, filename);
+      const localPath = await downloadMedia(activeBotToken, doc.file_id, filename);
       clearInterval(typingInterval);
       const msg = buildDocumentMessage(localPath, filename, ctx.message.caption ?? undefined);
       handleMessage(ctx, msg).catch((err) => logger.error({ err }, 'Unhandled document message error'));
@@ -993,7 +1013,7 @@ export function createBot(): Bot {
     try {
       const video = ctx.message.video;
       const filename = video.file_name ?? `video_${Date.now()}.mp4`;
-      const localPath = await downloadMedia(TELEGRAM_BOT_TOKEN, video.file_id, filename);
+      const localPath = await downloadMedia(activeBotToken, video.file_id, filename);
       clearInterval(typingInterval);
       const msg = buildVideoMessage(localPath, ctx.message.caption ?? undefined);
       handleMessage(ctx, msg).catch((err) => logger.error({ err }, 'Unhandled video message error'));
@@ -1018,7 +1038,7 @@ export function createBot(): Bot {
     try {
       const videoNote = ctx.message.video_note;
       const filename = `video_note_${Date.now()}.mp4`;
-      const localPath = await downloadMedia(TELEGRAM_BOT_TOKEN, videoNote.file_id, filename);
+      const localPath = await downloadMedia(activeBotToken, videoNote.file_id, filename);
       clearInterval(typingInterval);
       const msg = buildVideoMessage(localPath, undefined);
       handleMessage(ctx, msg).catch((err) => logger.error({ err }, 'Unhandled video note message error'));
@@ -1057,8 +1077,12 @@ export async function processMessageFromDashboard(
 
   try {
     const memCtx = await buildMemoryContext(chatIdStr, text);
-    const fullMessage = memCtx ? `${memCtx}\n\n${text}` : text;
-    const sessionId = getSession(chatIdStr);
+    const dashParts: string[] = [];
+    if (agentSystemPrompt) dashParts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
+    if (memCtx) dashParts.push(memCtx);
+    dashParts.push(text);
+    const fullMessage = dashParts.join('\n\n');
+    const sessionId = getSession(chatIdStr, AGENT_ID);
 
     const onProgress = (event: AgentProgressEvent) => {
       emitChatEvent({ type: 'progress', chatId: chatIdStr, description: event.description });
@@ -1072,7 +1096,7 @@ export async function processMessageFromDashboard(
       sessionId,
       () => {}, // no typing action for dashboard
       onProgress,
-      undefined,
+      agentDefaultModel,
       abortCtrl,
     );
 
@@ -1085,13 +1109,13 @@ export async function processMessageFromDashboard(
     }
 
     if (result.newSessionId) {
-      setSession(chatIdStr, result.newSessionId);
+      setSession(chatIdStr, result.newSessionId, AGENT_ID);
     }
 
     const rawResponse = result.text?.trim() || 'Done.';
 
     // Save conversation turn
-    saveConversationTurn(chatIdStr, text, rawResponse, result.newSessionId ?? sessionId);
+    saveConversationTurn(chatIdStr, text, rawResponse, result.newSessionId ?? sessionId, AGENT_ID);
 
     // Emit assistant response to SSE clients
     emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: rawResponse, source: 'dashboard' });
@@ -1107,16 +1131,21 @@ export async function processMessageFromDashboard(
     // Log token usage
     if (result.usage) {
       const activeSessionId = result.newSessionId ?? sessionId;
-      saveTokenUsage(
-        chatIdStr,
-        activeSessionId,
-        result.usage.inputTokens,
-        result.usage.outputTokens,
-        result.usage.lastCallCacheRead,
-        result.usage.lastCallInputTokens,
-        result.usage.totalCostUsd,
-        result.usage.didCompact,
-      );
+      try {
+        saveTokenUsage(
+          chatIdStr,
+          activeSessionId,
+          result.usage.inputTokens,
+          result.usage.outputTokens,
+          result.usage.lastCallCacheRead,
+          result.usage.lastCallInputTokens,
+          result.usage.totalCostUsd,
+          result.usage.didCompact,
+          AGENT_ID,
+        );
+      } catch (dbErr) {
+        logger.error({ err: dbErr }, 'Failed to save token usage');
+      }
     }
   } catch (err) {
     setActiveAbort(chatIdStr, null);

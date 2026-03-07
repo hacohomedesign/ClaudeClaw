@@ -1,0 +1,15 @@
+name: Content
+description: YouTube scripts, LinkedIn posts, carousels, trend research, content calendar
+
+telegram_bot_token_env: CONTENT_BOT_TOKEN
+
+model: claude-sonnet-4-6
+
+obsidian:
+  vault: /Users/marwankashef/Desktop/Prompt Advisers/Mark's World
+  folders:
+    - YouTube/
+    - Content/
+    - Teaching/
+  read_only:
+    - Daily Notes/
