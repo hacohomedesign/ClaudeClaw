@@ -2,13 +2,14 @@ import fs from 'fs';
 import path from 'path';
 
 import { createBot } from './bot.js';
-import { ALLOWED_CHAT_ID, TELEGRAM_BOT_TOKEN, STORE_DIR, PROJECT_ROOT } from './config.js';
+import { ALLOWED_CHAT_ID, TELEGRAM_BOT_TOKEN, STORE_DIR, PROJECT_ROOT, MAILHUB_ENABLED } from './config.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase } from './db.js';
 import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
 import { runDecaySweep } from './memory.js';
 import { startInboxWatcher } from './inbox.js';
+import { initMailHub } from './mailhub/index.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
 
@@ -63,6 +64,14 @@ async function main(): Promise<void> {
   cleanupOldUploads();
 
   const bot = createBot();
+
+  if (MAILHUB_ENABLED) {
+    const mailNotify = ALLOWED_CHAT_ID
+      ? (text: string) => { bot.api.sendMessage(ALLOWED_CHAT_ID, text, { parse_mode: 'HTML' }).then(() => {}); }
+      : undefined;
+    await initMailHub(mailNotify);
+    logger.info('MailHub ready');
+  }
 
   // Start dashboard after bot is created so we can pass bot.api for chat relay
   startDashboard(bot.api);

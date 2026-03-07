@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -15,6 +16,11 @@ const envConfig = readEnvFile([
   'DASHBOARD_PORT',
   'DASHBOARD_TOKEN',
   'DASHBOARD_URL',
+  'DASHBOARD_USER',
+  'DASHBOARD_PASSWORD',
+  'MAILHUB_PGVECTOR_DSN',
+  'MAILHUB_ENABLED',
+  'MAILHUB_POLL_INTERVAL',
 ]);
 
 export const TELEGRAM_BOT_TOKEN =
@@ -67,3 +73,21 @@ export const DASHBOARD_TOKEN =
   process.env.DASHBOARD_TOKEN || envConfig.DASHBOARD_TOKEN || '';
 export const DASHBOARD_URL =
   process.env.DASHBOARD_URL || envConfig.DASHBOARD_URL || '';
+export const DASHBOARD_USER =
+  process.env.DASHBOARD_USER || envConfig.DASHBOARD_USER || '';
+export const DASHBOARD_PASSWORD =
+  process.env.DASHBOARD_PASSWORD || envConfig.DASHBOARD_PASSWORD || '';
+
+// Derived secret for session cookies — HMAC of DASHBOARD_TOKEN (no extra env var needed)
+export const DASHBOARD_COOKIE_SECRET = DASHBOARD_TOKEN
+  ? crypto.createHmac('sha256', DASHBOARD_TOKEN).update('claw-session-secret').digest()
+  : Buffer.alloc(32);
+
+// MailHub
+export const MAILHUB_ENABLED =
+  (process.env.MAILHUB_ENABLED || envConfig.MAILHUB_ENABLED || '').toLowerCase() === 'true';
+
+export const MAILHUB_POLL_INTERVAL = parseInt(
+  process.env.MAILHUB_POLL_INTERVAL || envConfig.MAILHUB_POLL_INTERVAL || '3600000',
+  10,
+);

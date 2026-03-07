@@ -128,6 +128,86 @@ function createSchema(database: Database.Database): void {
       INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.id, old.content);
       INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
     END;
+
+    -- MailHub tables
+    CREATE TABLE IF NOT EXISTS mailhub_accounts (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      email TEXT NOT NULL,
+      fetch_via TEXT NOT NULL DEFAULT 'mcp',
+      gog_account TEXT,
+      gog_client TEXT,
+      active INTEGER DEFAULT 1,
+      last_poll INTEGER,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS mailhub_emails (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id TEXT NOT NULL,
+      gmail_id TEXT NOT NULL,
+      message_id TEXT NOT NULL UNIQUE,
+      thread_id TEXT NOT NULL,
+      from_addr TEXT NOT NULL,
+      from_name TEXT,
+      to_addr TEXT,
+      subject TEXT NOT NULL,
+      body_sanitized TEXT NOT NULL,
+      summary TEXT,
+      category TEXT,
+      urgency INTEGER DEFAULT 0,
+      injection_score INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'unread',
+      has_attachments INTEGER DEFAULT 0,
+      received_at INTEGER NOT NULL,
+      fetched_at INTEGER NOT NULL,
+      labels TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mh_emails_account ON mailhub_emails(account_id, received_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_mh_emails_status ON mailhub_emails(status);
+    CREATE INDEX IF NOT EXISTS idx_mh_emails_thread ON mailhub_emails(thread_id);
+
+    CREATE TABLE IF NOT EXISTS mailhub_threads (
+      thread_id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      participants TEXT,
+      message_count INTEGER DEFAULT 1,
+      last_message_at INTEGER NOT NULL,
+      status TEXT DEFAULT 'active'
+    );
+
+    CREATE TABLE IF NOT EXISTS mailhub_attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email_id INTEGER NOT NULL,
+      filename TEXT NOT NULL,
+      mime_type TEXT,
+      size_bytes INTEGER,
+      gmail_att_id TEXT,
+      risk_level TEXT DEFAULT 'caution',
+      drive_file_id TEXT,
+      drive_url TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS mailhub_digests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL,
+      cycle INTEGER NOT NULL,
+      emails_included TEXT NOT NULL,
+      obsidian_path TEXT,
+      telegram_sent INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS mailhub_drafts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email_id INTEGER NOT NULL,
+      draft_body TEXT NOT NULL,
+      justification TEXT,
+      status TEXT DEFAULT 'proposed',
+      created_at INTEGER NOT NULL
+    );
   `);
 }
 
@@ -148,6 +228,10 @@ function runMigrations(database: Database.Database): void {
   if (!hasContextTokens) {
     database.exec(`ALTER TABLE token_usage ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0`);
   }
+}
+
+export function getDb(): Database.Database {
+  return db;
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */

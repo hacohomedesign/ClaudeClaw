@@ -1,3 +1,47 @@
+export function getLoginHtml(error?: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClaudeClaw — Login</title>
+<style>
+  body { background: #0f0f0f; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .login-card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px; padding: 40px 32px; width: 100%; max-width: 380px; margin: 16px; }
+  .login-title { font-size: 24px; font-weight: 700; color: #fff; text-align: center; margin-bottom: 8px; }
+  .login-subtitle { font-size: 13px; color: #666; text-align: center; margin-bottom: 28px; }
+  .login-error { background: #3b0f0f; border: 1px solid #5c1a1a; color: #f87171; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; text-align: center; }
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .field input { width: 100%; background: #111; border: 1px solid #2a2a2a; border-radius: 10px; color: #e0e0e0; padding: 12px 14px; font-size: 15px; outline: none; box-sizing: border-box; transition: border-color 0.15s; }
+  .field input:focus { border-color: #4f46e5; }
+  .login-btn { width: 100%; background: #4f46e5; color: #fff; border: none; border-radius: 10px; padding: 12px; font-size: 15px; font-weight: 600; cursor: pointer; transition: background 0.15s; margin-top: 8px; }
+  .login-btn:hover { background: #4338ca; }
+</style>
+</head>
+<body>
+<div class="login-card">
+  <div class="login-title">ClaudeClaw</div>
+  <div class="login-subtitle">Sign in to access the dashboard</div>
+  ${error ? `<div class="login-error">${error}</div>` : ''}
+  <form method="POST" action="/login">
+    <div class="field">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autocomplete="username" required autofocus>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
+    </div>
+    <button type="submit" class="login-btn">Sign In</button>
+  </form>
+</div>
+</body>
+</html>`;
+}
+
+import { getMailDashboardSection, getMailDashboardScript } from './mailhub/dashboard.js';
+
 export function getDashboardHtml(token: string, chatId: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -103,6 +147,7 @@ export function getDashboardHtml(token: string, chatId: string): string {
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
       </svg>
     </button>
+    <a id="logout-btn" href="/logout" class="text-gray-500 hover:text-white transition text-xs" style="display:none">Logout</a>
   </div>
 </div>
 <div id="bot-info" class="flex items-center gap-3 mb-4 text-xs text-gray-500"></div>
@@ -217,6 +262,8 @@ export function getDashboardHtml(token: string, chatId: string): string {
   </div>
 </div>
 
+${getMailDashboardSection()}
+
 </div><!-- end RIGHT COLUMN -->
 
 </div><!-- end grid -->
@@ -262,6 +309,12 @@ function detectDevice() {
 }
 detectDevice();
 window.addEventListener('resize', detectDevice);
+
+// Show logout button when using cookie auth (no token in URL)
+if (!TOKEN) {
+  const logoutBtn = document.getElementById('logout-btn');
+  if (logoutBtn) logoutBtn.style.display = 'inline';
+}
 
 // Memory drawer state
 let drawerSector = '';
@@ -335,8 +388,14 @@ function closeDrawer() {
 }
 
 function api(path) {
-  const sep = path.includes('?') ? '&' : '?';
-  return fetch(BASE + path + sep + 'token=' + TOKEN).then(r => r.json());
+  if (TOKEN) {
+    const sep = path.includes('?') ? '&' : '?';
+    return fetch(BASE + path + sep + 'token=' + TOKEN).then(r => r.json());
+  }
+  return fetch(BASE + path, { credentials: 'same-origin' }).then(r => {
+    if (r.status === 401) { location.href = '/login'; throw new Error('Unauthorized'); }
+    return r.json();
+  });
 }
 
 let salienceChart, memTimelineChart, costChart, cacheChart;
@@ -528,8 +587,7 @@ function escapeHtml(s) {
 
 async function loadInfo() {
   try {
-    const r = await fetch(BASE + '/api/info?token=' + TOKEN + '&chatId=' + CHAT_ID);
-    const d = await r.json();
+    const d = await api('/api/info?chatId=' + CHAT_ID);
     const el = document.getElementById('bot-info');
     const parts = [];
     if (d.botName) parts.push('<span class="font-semibold text-white">' + d.botName + '</span>' + (d.botUsername ? ' <span class="text-gray-600">@' + d.botUsername + '</span>' : ''));
@@ -560,10 +618,12 @@ document.addEventListener('click', function(e) {
   document.querySelectorAll('.info-tip.active').forEach(t => t.classList.remove('active'));
 }, true);
 
+${getMailDashboardScript()}
+
 async function refreshAll() {
   const btn = document.getElementById('refresh-btn').querySelector('svg');
   btn.classList.add('refresh-spin');
-  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens()]);
+  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadMailStats()]);
   btn.classList.remove('refresh-spin');
   document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 }
@@ -636,7 +696,7 @@ async function loadChatHistory() {
 
 function connectChatSSE() {
   if (chatSSE) { chatSSE.close(); chatSSE = null; }
-  const url = BASE + '/api/chat/stream?token=' + TOKEN;
+  const url = TOKEN ? BASE + '/api/chat/stream?token=' + TOKEN : BASE + '/api/chat/stream';
   chatSSE = new EventSource(url);
 
   chatSSE.addEventListener('user_message', function(e) {
@@ -760,10 +820,12 @@ async function sendChatMessage() {
   // Disable send while processing
   document.getElementById('chat-send-btn').disabled = true;
   try {
-    await fetch(BASE + '/api/chat/send?token=' + TOKEN, {
+    const sendUrl = TOKEN ? BASE + '/api/chat/send?token=' + TOKEN : BASE + '/api/chat/send';
+    await fetch(sendUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text }),
+      credentials: 'same-origin',
     });
   } catch(e) {
     console.error('Send error', e);
@@ -780,7 +842,8 @@ function autoResizeInput() {
 
 async function abortProcessing() {
   try {
-    await fetch(BASE + '/api/chat/abort?token=' + TOKEN, { method: 'POST' });
+    const abortUrl = TOKEN ? BASE + '/api/chat/abort?token=' + TOKEN : BASE + '/api/chat/abort';
+    await fetch(abortUrl, { method: 'POST', credentials: 'same-origin' });
   } catch(e) { console.error('Abort error', e); }
 }
 </script>

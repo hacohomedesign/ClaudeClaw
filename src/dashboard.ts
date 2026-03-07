@@ -1,9 +1,11 @@
+import crypto from 'crypto';
 import { Api, RawApi } from 'grammy';
 import { Hono } from 'hono';
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { serve } from '@hono/node-server';
 
-import { ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT } from './config.js';
+import { ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, DASHBOARD_USER, DASHBOARD_PASSWORD, DASHBOARD_COOKIE_SECRET, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT } from './config.js';
 import {
   getAllScheduledTasks,
   getConversationPage,
@@ -19,9 +21,43 @@ import {
   getSessionTokenUsage,
 } from './db.js';
 import { processMessageFromDashboard } from './bot.js';
-import { getDashboardHtml } from './dashboard-html.js';
+import { getDashboardHtml, getLoginHtml } from './dashboard-html.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
+import { registerMailDashboardRoutes } from './mailhub/dashboard.js';
+
+// ── Session cookie helpers ──────────────────────────────────────────────
+
+const COOKIE_NAME = 'claw_session';
+const SESSION_MAX_AGE = 7 * 24 * 60 * 60; // 7 days in seconds
+
+function makeSessionCookie(user: string): string {
+  const expiry = Math.floor(Date.now() / 1000) + SESSION_MAX_AGE;
+  const payload = `${user}.${expiry}`;
+  const hmac = crypto.createHmac('sha256', DASHBOARD_COOKIE_SECRET).update(payload).digest('hex');
+  return `${payload}.${hmac}`;
+}
+
+function verifySessionCookie(value: string): boolean {
+  const parts = value.split('.');
+  if (parts.length !== 3) return false;
+  const [user, expiryStr, hmac] = parts;
+  const expiry = parseInt(expiryStr, 10);
+  if (isNaN(expiry) || expiry < Math.floor(Date.now() / 1000)) return false;
+  const expected = crypto.createHmac('sha256', DASHBOARD_COOKIE_SECRET).update(`${user}.${expiryStr}`).digest('hex');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(hmac, 'utf8'), Buffer.from(expected, 'utf8'));
+  } catch {
+    return false;
+  }
+}
+
+function verifyPassword(input: string): boolean {
+  const inputBuf = Buffer.from(input, 'utf8');
+  const expectedBuf = Buffer.from(DASHBOARD_PASSWORD, 'utf8');
+  if (inputBuf.length !== expectedBuf.length) return false;
+  return crypto.timingSafeEqual(inputBuf, expectedBuf);
+}
 
 export function startDashboard(botApi?: Api<RawApi>): void {
   if (!DASHBOARD_TOKEN) {
@@ -31,19 +67,72 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
   const app = new Hono();
 
-  // Token auth middleware
+  // ── Login / Logout routes (no auth required) ─────────────────────────
+
+  app.get('/login', (c) => {
+    return c.html(getLoginHtml());
+  });
+
+  app.post('/login', async (c) => {
+    const body = await c.req.parseBody();
+    const user = String(body['username'] || '');
+    const pass = String(body['password'] || '');
+
+    if (!DASHBOARD_USER || !DASHBOARD_PASSWORD) {
+      return c.html(getLoginHtml('Login is not configured (missing DASHBOARD_USER/DASHBOARD_PASSWORD)'));
+    }
+
+    if (user === DASHBOARD_USER && verifyPassword(pass)) {
+      const cookieValue = makeSessionCookie(user);
+      setCookie(c, COOKIE_NAME, cookieValue, {
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+        maxAge: SESSION_MAX_AGE,
+      });
+      return c.redirect('/');
+    }
+
+    return c.html(getLoginHtml('Invalid username or password'));
+  });
+
+  app.get('/logout', (c) => {
+    deleteCookie(c, COOKIE_NAME, { path: '/' });
+    return c.redirect('/login');
+  });
+
+  // ── Auth middleware (cookie + token fallback) ─────────────────────────
+
   app.use('*', async (c, next) => {
+    // Check 1: session cookie
+    const cookie = getCookie(c, COOKIE_NAME);
+    if (cookie && verifySessionCookie(cookie)) {
+      await next();
+      return;
+    }
+
+    // Check 2: token query param (retrocompat)
     const token = c.req.query('token');
-    if (token !== DASHBOARD_TOKEN) {
+    if (token === DASHBOARD_TOKEN) {
+      await next();
+      return;
+    }
+
+    // Not authenticated — redirect HTML requests to login, 401 for API
+    const path = new URL(c.req.url).pathname;
+    if (path.startsWith('/api/')) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
-    await next();
+    return c.redirect('/login');
   });
 
   // Serve dashboard HTML
   app.get('/', (c) => {
+    // If authenticated via cookie (no token in URL), pass empty token so frontend uses cookies
+    const token = c.req.query('token') || '';
     const chatId = c.req.query('chatId') || '';
-    return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId));
+    return c.html(getDashboardHtml(token, chatId));
   });
 
   // Scheduled tasks
@@ -205,6 +294,9 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     const aborted = abortActiveQuery(chatId);
     return c.json({ ok: aborted });
   });
+
+  // ── Mail routes ──────────────────────────────────────────────────────
+  registerMailDashboardRoutes(app);
 
   serve({ fetch: app.fetch, port: DASHBOARD_PORT }, () => {
     logger.info({ port: DASHBOARD_PORT }, 'Dashboard server running');
