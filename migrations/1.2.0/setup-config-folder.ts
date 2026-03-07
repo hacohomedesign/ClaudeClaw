@@ -85,6 +85,16 @@ export async function runMigration(deps: MigrationDeps): Promise<void> {
       console.log('Skipped copy — keeping existing file.');
       fs.unlinkSync(sourcePath);
       console.log('✓  Removed CLAUDE.md from project root');
+        // Write CLAUDECLAW_CONFIG into .env if not already present
+        const envPath = path.join(projectRoot, '.env');
+        if (fs.existsSync(envPath)) {
+          let content = fs.readFileSync(envPath, 'utf-8');
+          if (!content.includes('CLAUDECLAW_CONFIG=')) {
+            content = content.trimEnd() + `\nCLAUDECLAW_CONFIG=${rawPath}\n`;
+            fs.writeFileSync(envPath, content, 'utf-8');
+            console.log('✓  Added CLAUDECLAW_CONFIG to .env');
+          }
+        }
       return;
     }
   }
