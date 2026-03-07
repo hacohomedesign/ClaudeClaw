@@ -623,25 +623,38 @@ async function toggleAgentDetail(agentId) {
   el.style.display = '';
   el.innerHTML = '<div class="text-xs text-gray-500">Loading...</div>';
   try {
-    const [tasks, hive] = await Promise.all([
+    const [tasks, hive, convo] = await Promise.all([
       api('/api/agents/' + agentId + '/tasks'),
       api('/api/hive-mind?agent=' + agentId + '&limit=5'),
+      api('/api/agents/' + agentId + '/conversation?chatId=' + CHAT_ID + '&limit=4'),
     ]);
     let html = '';
+    // Last conversation
+    if (convo.turns && convo.turns.length > 0) {
+      html += '<div class="text-xs text-gray-400 font-semibold mb-1" style="border-top:1px solid #333;padding-top:8px">Last conversation</div>';
+      const sorted = convo.turns.slice().reverse();
+      html += sorted.map(t => {
+        const role = t.role === 'user' ? '<span style="color:#818cf8">You</span>' : '<span style="color:#6ee7b7">Agent</span>';
+        const text = t.content.length > 120 ? t.content.slice(0, 120) + '...' : t.content;
+        return '<div class="text-xs text-gray-400 mt-1">' + role + ': ' + escapeHtml(text) + '</div>';
+      }).join('');
+    }
+    // Hive mind
     if (hive.entries && hive.entries.length > 0) {
-      html += '<div class="text-xs text-gray-400 font-semibold mb-1">Recent activity</div>';
+      html += '<div class="text-xs text-gray-400 font-semibold mt-2 mb-1" style="border-top:1px solid #333;padding-top:8px">Hive mind</div>';
       html += hive.entries.map(e => {
         const time = new Date(e.created_at * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
         return '<div class="text-xs text-gray-400">' + time + ' ' + e.action + ' — ' + e.summary + '</div>';
       }).join('');
     }
+    // Tasks
     if (tasks.tasks && tasks.tasks.length > 0) {
-      html += '<div class="text-xs text-gray-400 font-semibold mt-2 mb-1">Scheduled (' + tasks.tasks.length + ')</div>';
+      html += '<div class="text-xs text-gray-400 font-semibold mt-2 mb-1" style="border-top:1px solid #333;padding-top:8px">Scheduled (' + tasks.tasks.length + ')</div>';
       html += tasks.tasks.slice(0, 3).map(t =>
         '<div class="text-xs text-gray-500">' + t.prompt.slice(0, 60) + (t.prompt.length > 60 ? '...' : '') + '</div>'
       ).join('');
     }
-    if (!html) html = '<div class="text-xs text-gray-500">No recent activity</div>';
+    if (!html) html = '<div class="text-xs text-gray-500">No activity yet</div>';
     el.innerHTML = html;
   } catch { el.innerHTML = '<div class="text-xs text-red-400">Failed to load</div>'; }
 }

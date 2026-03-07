@@ -826,6 +826,15 @@ export function getAgentTokenStats(agentId: string): { todayCost: number; todayT
   return { ...today, allTimeCost: allTime.allTimeCost };
 }
 
+export function getAgentRecentConversation(agentId: string, chatId: string, limit = 4): ConversationTurn[] {
+  return db
+    .prepare(
+      `SELECT * FROM conversation_log WHERE agent_id = ? AND chat_id = ?
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(agentId, chatId, limit) as ConversationTurn[];
+}
+
 export function getSessionTokenUsage(sessionId: string): SessionTokenSummary | null {
   const row = db
     .prepare(
