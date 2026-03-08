@@ -4,6 +4,7 @@ import yaml from 'js-yaml';
 
 import { CLAUDECLAW_CONFIG } from './config.js';
 import { readEnvFile } from './env.js';
+import { logger } from './logger.js';
 
 export interface AgentConfig {
   name: string;
@@ -23,7 +24,8 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   const configPath = path.join(agentDir, 'agent.yaml');
 
   if (!fs.existsSync(configPath)) {
-    throw new Error(`Agent config not found: ${configPath}`);
+    logger.warn(`Agent '${agentId}' not found. Please re-check the agent name and make sure it exists under ${agentDir}.`);
+    process.exit(1)
   }
 
   const raw = yaml.load(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
