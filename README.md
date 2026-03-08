@@ -453,9 +453,23 @@ Every skill in `~/.claude/skills/` loads on every session. Call them directly (`
 | `/start` | First message to the bot — confirms it's running |
 | `/chatid` | Shows your Telegram chat ID for the `ALLOWED_CHAT_ID` setting in `.env` |
 
-All commands are registered in Telegram's command menu, so you get autocomplete when you type `/`.
+All built-in commands are registered in Telegram's command menu, so you get autocomplete when you type `/`.
 
-Any other `/command` (like `/todo`, `/gmail`, `/calendar`) passes through to Claude and routes to whatever matching skill you have installed.
+### Skill commands auto-register in Telegram
+
+Any skill in `~/.claude/skills/` that has `user_invocable: true` in its `SKILL.md` frontmatter automatically shows up in Telegram's `/` command menu. No code changes needed -- just drop a skill folder in and restart the bot.
+
+For example, if you install the bundled `tldr` skill:
+
+```bash
+cp -r skills/tldr ~/.claude/skills/tldr
+```
+
+The next time the bot starts, `/tldr` appears in Telegram's autocomplete alongside the built-in commands. The description shown in the menu comes from the skill's `description` field in its frontmatter.
+
+**How it works:** On startup, ClaudeClaw scans `~/.claude/skills/` for folders containing a `SKILL.md` with valid YAML frontmatter. If `user_invocable: true` is set, the skill's `name` and `description` are registered with Telegram's `setMyCommands` API alongside the built-in commands. Telegram allows up to 100 commands total.
+
+Any `/command` not in the built-in list (like `/todo`, `/gmail`, `/tldr`) passes through to Claude and routes to whatever matching skill you have installed.
 
 ### /newchat + /respin workflow
 
@@ -1026,6 +1040,9 @@ cp -r skills/google-calendar ~/.claude/skills/google-calendar
 
 # Slack — list conversations, read messages, send replies
 cp -r skills/slack ~/.claude/skills/slack
+
+# TLDR — summarize conversations and save as notes
+cp -r skills/tldr ~/.claude/skills/tldr
 ```
 
 **Gmail + Calendar require Google OAuth credentials.** See `.env.example` for the variables and each skill's `SKILL.md` for one-time setup instructions (create a Google Cloud project, enable the API, download credentials, run auth once).

@@ -1,4 +1,6 @@
 import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import { Api, Bot, Context, InputFile, RawApi } from 'grammy';
 
 import { runAgent, UsageInfo, AgentProgressEvent } from './agent.js';
@@ -484,6 +486,58 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
   }
 }
 
+/**
+ * Auto-discover user-invocable skills from ~/.claude/skills/.
+ * Reads SKILL.md frontmatter for name + description when user_invocable: true.
+ */
+function discoverSkillCommands(): Array<{ command: string; description: string }> {
+  const skillsDir = path.join(os.homedir(), '.claude', 'skills');
+  const commands: Array<{ command: string; description: string }> = [];
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(skillsDir);
+  } catch {
+    return commands;
+  }
+
+  for (const entry of entries) {
+    const skillFile = path.join(skillsDir, entry, 'SKILL.md');
+    if (!fs.existsSync(skillFile)) continue;
+
+    try {
+      const content = fs.readFileSync(skillFile, 'utf-8');
+
+      // Parse YAML frontmatter between --- delimiters
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (!fmMatch) continue;
+
+      const fm = fmMatch[1];
+
+      // Check user_invocable: true
+      if (!/user_invocable:\s*true/i.test(fm)) continue;
+
+      // Extract name
+      const nameMatch = fm.match(/^name:\s*(.+)$/m);
+      if (!nameMatch) continue;
+      const name = nameMatch[1].trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+      if (!name) continue;
+
+      // Extract description (truncate to 256 chars for Telegram limit)
+      const descMatch = fm.match(/^description:\s*(.+)$/m);
+      const desc = descMatch
+        ? descMatch[1].trim().slice(0, 256)
+        : `Run the ${name} skill`;
+
+      commands.push({ command: name, description: desc });
+    } catch {
+      // Skip malformed skill files
+    }
+  }
+
+  return commands.sort((a, b) => a.command.localeCompare(b.command));
+}
+
 export function createBot(): Bot {
   const token = activeBotToken;
   if (!token) {
@@ -492,10 +546,10 @@ export function createBot(): Bot {
 
   const bot = new Bot(token);
 
-  // Register commands in the Telegram menu
-  bot.api.setMyCommands([
+  // Register commands in the Telegram menu (built-in + auto-discovered skills)
+  const builtInCommands = [
     { command: 'start', description: 'Start the bot' },
-    { command: 'help', description: 'Help — list available commands' },
+    { command: 'help', description: 'Help -- list available commands' },
     { command: 'newchat', description: 'Start a new Claude session' },
     { command: 'respin', description: 'Reload recent context' },
     { command: 'voice', description: 'Toggle voice mode on/off' },
@@ -506,7 +560,12 @@ export function createBot(): Bot {
     { command: 'slack', description: 'Recent Slack messages' },
     { command: 'dashboard', description: 'Open web dashboard' },
     { command: 'stop', description: 'Stop current processing' },
-  ]).catch((err) => logger.warn({ err }, 'Failed to register bot commands with Telegram'));
+  ];
+  const skillCommands = discoverSkillCommands();
+  const allCommands = [...builtInCommands, ...skillCommands].slice(0, 100); // Telegram limit: 100 commands
+  bot.api.setMyCommands(allCommands)
+    .then(() => logger.info({ count: skillCommands.length }, 'Registered %d skill commands with Telegram', skillCommands.length))
+    .catch((err) => logger.warn({ err }, 'Failed to register bot commands with Telegram'));
 
   // /help — list available commands
   bot.command('help', (ctx) => {
