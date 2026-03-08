@@ -15,6 +15,8 @@ const envConfig = readEnvFile([
   'DASHBOARD_PORT',
   'DASHBOARD_TOKEN',
   'DASHBOARD_URL',
+  'DASHBOARD_USER',
+  'DASHBOARD_PASSWORD',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -93,3 +95,7 @@ export const DASHBOARD_TOKEN =
   process.env.DASHBOARD_TOKEN || envConfig.DASHBOARD_TOKEN || '';
 export const DASHBOARD_URL =
   process.env.DASHBOARD_URL || envConfig.DASHBOARD_URL || '';
+export const DASHBOARD_USER =
+  process.env.DASHBOARD_USER || envConfig.DASHBOARD_USER || '';
+export const DASHBOARD_PASSWORD =
+  process.env.DASHBOARD_PASSWORD || envConfig.DASHBOARD_PASSWORD || '';

@@ -15,7 +15,7 @@ import {
   agentSystemPrompt,
   TYPING_REFRESH_MS,
 } from './config.js';
-import { clearSession, getRecentConversation, getRecentMemories, getSession, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
+import { clearSession, getRecentConversation, getRecentMemories, getSession, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, logToHiveMind } from './db.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
 import { buildMemoryContext, saveConversationTurn } from './memory.js';
@@ -384,6 +384,10 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     // Skip logging for synthetic messages like /respin to avoid self-referential growth.
     if (!skipLog) {
       saveConversationTurn(chatIdStr, message, rawResponse, result.newSessionId ?? sessionId, AGENT_ID);
+      // Log to hive mind so other agents can see this activity
+      const userMsg = message.length > 80 ? message.slice(0, 80) + '...' : message;
+      const botMsg = rawResponse.length > 120 ? rawResponse.slice(0, 120) + '...' : rawResponse;
+      logToHiveMind(AGENT_ID, chatIdStr, 'message', `[user] ${userMsg}\n[reply] ${botMsg}`);
     }
 
     // Emit assistant response to SSE clients
@@ -936,9 +940,8 @@ export function createBot(): Bot {
       const localPath = await downloadTelegramFile(activeBotToken, fileId, UPLOADS_DIR);
       const transcribed = await transcribeAudio(localPath);
       clearInterval(typingInterval);
-      // Only reply with voice if explicitly requested — otherwise execute and respond in text
-      const wantsVoiceBack = /\b(respond (with|via|in) voice|send (me )?(a )?voice( note| back)?|voice reply|reply (with|via) voice)\b/i.test(transcribed);
-      handleMessage(ctx, `[Voice transcribed]: ${transcribed}`, wantsVoiceBack).catch((err) => logger.error({ err }, 'Unhandled voice message error'));
+      // Always reply with voice when user sends a voice note
+      handleMessage(ctx, `[Voice transcribed]: ${transcribed}`, true).catch((err) => logger.error({ err }, 'Unhandled voice message error'));
     } catch (err) {
       clearInterval(typingInterval);
       logger.error({ err }, 'Voice transcription failed');
