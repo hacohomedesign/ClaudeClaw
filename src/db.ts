@@ -355,6 +355,17 @@ export function getAllScheduledTasks(agentId?: string): ScheduledTask[] {
     .all() as ScheduledTask[];
 }
 
+/**
+ * Mark a task as running by immediately advancing its next_run to the next
+ * scheduled occurrence. This prevents the scheduler from firing the same task
+ * again on the next tick while it is still executing (double-fire bug).
+ */
+export function markTaskRunning(id: string, tentativeNextRun: number): void {
+  db.prepare(
+    `UPDATE scheduled_tasks SET next_run = ? WHERE id = ?`,
+  ).run(tentativeNextRun, id);
+}
+
 export function updateTaskAfterRun(
   id: string,
   nextRun: number,
