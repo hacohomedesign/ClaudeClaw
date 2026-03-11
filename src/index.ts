@@ -41,20 +41,30 @@ if (AGENT_ID !== 'main') {
   });
   logger.info({ agentId: AGENT_ID, name: agentConfig.name }, 'Running as agent');
 } else {
-  // For main bot: check if CLAUDE.md exists in CLAUDECLAW_CONFIG or repo
+  // For main bot: read CLAUDE.md from CLAUDECLAW_CONFIG and inject it as
+  // systemPrompt — the same pattern used by sub-agents. Never copy the file
+  // into the repo; that defeats the purpose of CLAUDECLAW_CONFIG and risks
+  // accidentally committing personal config.
   const externalClaudeMd = path.join(CLAUDECLAW_CONFIG, 'CLAUDE.md');
   if (fs.existsSync(externalClaudeMd)) {
-    // Copy external CLAUDE.md into repo root so the SDK picks it up via cwd
-    fs.copyFileSync(externalClaudeMd, path.join(PROJECT_ROOT, 'CLAUDE.md'));
-    logger.info({ source: externalClaudeMd }, 'Loaded CLAUDE.md from CLAUDECLAW_CONFIG');
-  } else if (!fs.existsSync(path.join(PROJECT_ROOT, 'CLAUDE.md'))) {
-    const examplePath = path.join(PROJECT_ROOT, 'CLAUDE.md.example');
-    if (fs.existsSync(examplePath)) {
-      logger.warn(
-        'No CLAUDE.md found. Copy CLAUDE.md.example to CLAUDE.md (or to %s/CLAUDE.md) and customize it.',
-        CLAUDECLAW_CONFIG,
-      );
+    let systemPrompt: string | undefined;
+    try {
+      systemPrompt = fs.readFileSync(externalClaudeMd, 'utf-8');
+    } catch { /* unreadable */ }
+    if (systemPrompt) {
+      setAgentOverrides({
+        agentId: 'main',
+        botToken: activeBotToken,
+        cwd: PROJECT_ROOT,
+        systemPrompt,
+      });
+      logger.info({ source: externalClaudeMd }, 'Loaded CLAUDE.md from CLAUDECLAW_CONFIG');
     }
+  } else if (!fs.existsSync(path.join(PROJECT_ROOT, 'CLAUDE.md'))) {
+    logger.warn(
+      'No CLAUDE.md found. Copy CLAUDE.md.example to %s/CLAUDE.md and customize it.',
+      CLAUDECLAW_CONFIG,
+    );
   }
 }
 
