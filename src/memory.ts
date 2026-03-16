@@ -119,17 +119,31 @@ export function saveConversationTurn(
   claudeResponse: string,
   sessionId?: string,
   agentId = 'main',
+  topicId?: string | null,
 ): void {
   try {
     // Always log full conversation to conversation_log (for /respin)
-    logConversationTurn(chatId, 'user', userMessage, sessionId, agentId);
-    logConversationTurn(chatId, 'assistant', claudeResponse, sessionId, agentId);
+    logConversationTurn(chatId, 'user', userMessage, sessionId, agentId, topicId);
+    logConversationTurn(chatId, 'assistant', claudeResponse, sessionId, agentId, topicId);
   } catch (err) {
     logger.error({ err }, 'Failed to log conversation turn');
   }
 
   // Fire-and-forget: LLM-powered memory extraction via Gemini
   // This runs async and never blocks the user's response
+  triggerMemoryIngestion(chatId, userMessage, claudeResponse);
+}
+
+/**
+ * Fire-and-forget memory ingestion. Separated from saveConversationTurn
+ * so callers that pre-write the user message can trigger ingestion without
+ * double-logging conversation turns.
+ */
+export function triggerMemoryIngestion(
+  chatId: string,
+  userMessage: string,
+  claudeResponse: string,
+): void {
   void ingestConversationTurn(chatId, userMessage, claudeResponse).catch((err) => {
     logger.error({ err }, 'Memory ingestion fire-and-forget failed');
   });

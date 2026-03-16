@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import yaml from 'js-yaml';
 
 import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
 import { createBot } from './bot.js';
@@ -14,6 +15,7 @@ import { runDecaySweep } from './memory.js';
 import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
+import { initAutoArchive } from './auto-archive.js';
 
 // Parse --agent flag
 const agentFlagIndex = process.argv.indexOf('--agent');
@@ -53,11 +55,30 @@ if (AGENT_ID !== 'main') {
       systemPrompt = fs.readFileSync(externalClaudeMd, 'utf-8');
     } catch { /* unreadable */ }
     if (systemPrompt) {
+      // Load optional obsidian config from CLAUDECLAW_CONFIG/agent.yaml
+      let obsidian: { vault: string; folders: string[]; readOnly?: string[] } | undefined;
+      const mainYaml = path.join(CLAUDECLAW_CONFIG, 'agent.yaml');
+      if (fs.existsSync(mainYaml)) {
+        try {
+          const raw = yaml.load(fs.readFileSync(mainYaml, 'utf-8')) as Record<string, unknown>;
+          const obsRaw = raw['obsidian'] as Record<string, unknown> | undefined;
+          if (obsRaw) {
+            obsidian = {
+              vault: obsRaw['vault'] as string,
+              folders: (obsRaw['folders'] as string[]) ?? [],
+              readOnly: (obsRaw['read_only'] as string[]) ?? [],
+            };
+            logger.info({ vault: obsidian.vault, folders: obsidian.folders }, 'Loaded Obsidian config for main bot');
+          }
+        } catch { /* invalid yaml, skip */ }
+      }
+
       setAgentOverrides({
         agentId: 'main',
         botToken: activeBotToken,
         cwd: PROJECT_ROOT,
         systemPrompt,
+        obsidian,
       });
       logger.info({ source: externalClaudeMd }, 'Loaded CLAUDE.md from CLAUDECLAW_CONFIG');
     }
@@ -179,6 +200,10 @@ async function main(): Promise<void> {
       setTelegramConnected(true);
       setBotInfo(botInfo.username ?? '', botInfo.first_name ?? 'ClaudeClaw');
       logger.info({ username: botInfo.username }, 'ClaudeClaw is running');
+      // Initialize auto-archive for forum topics (main bot only)
+      if (AGENT_ID === 'main') {
+        initAutoArchive(bot.api);
+      }
       if (AGENT_ID === 'main') {
         console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
         if (!ALLOWED_CHAT_ID) {
