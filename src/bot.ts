@@ -726,6 +726,8 @@ export function createBot(): Bot {
     { command: 'stop', description: 'Stop current processing' },
     { command: 'agents', description: 'List available agents' },
     { command: 'delegate', description: 'Delegate task to agent' },
+    { command: 'mission', description: 'Propose a multi-agent mission' },
+    { command: 'cancel', description: 'Cancel pending/running mission' },
     { command: 'topics', description: 'List active forum topics' },
     { command: 'close', description: 'Archive current forum topic' },
     { command: 'reopen', description: 'Reopen archived topic by name' },
@@ -753,9 +755,12 @@ export function createBot(): Bot {
       '/stop — Stop current processing\n' +
       '/agents — List available agents\n' +
       '/delegate — Delegate task to agent\n' +
+      '/mission — Propose a multi-agent mission\n' +
+      '/cancel — Cancel pending/running mission\n' +
       '/topics — List active forum topics\n' +
       '/close — Archive current topic\n' +
       '/reopen — Reopen archived topic\n\n' +
+      'Mission: /mission <goal> → approve with "go" or "revise: feedback"\n' +
       'Delegation: @agentId: prompt or /delegate agentId prompt\n\n' +
       'You can also send voice notes, photos, files, and videos.'
     );
