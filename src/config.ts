@@ -148,6 +148,29 @@ export function getTimeoutForMessage(message: string): number {
   return AGENT_TIMEOUT_MS_SHORT;
 }
 
+// Mission-specific timeouts — independent from per-message agent timeouts.
+// SUBTASK_TIMEOUT_MS: max time for a single focused subtask within a mission.
+// Default 10 minutes — subtasks are decomposed to be focused; if one needs 15m,
+// the decomposition was too coarse.
+export const SUBTASK_TIMEOUT_MS = parseInt(
+  process.env.SUBTASK_TIMEOUT_MS || envConfig.SUBTASK_TIMEOUT_MS || '600000',
+  10,
+);
+
+// MISSION_TIMEOUT_MS: overall wall-clock cap for an entire mission.
+// Default 45 minutes — a 5-subtask mission at 10m each = 50m worst case.
+export const MISSION_TIMEOUT_MS = parseInt(
+  process.env.MISSION_TIMEOUT_MS || envConfig.MISSION_TIMEOUT_MS || '2700000',
+  10,
+);
+
+// MISSION_MAX_RETRIES: how many times a timed-out subtask can be retried.
+// Only timeouts are retried, not logic errors.
+export const MISSION_MAX_RETRIES = parseInt(
+  process.env.MISSION_MAX_RETRIES || envConfig.MISSION_MAX_RETRIES || '1',
+  10,
+);
+
 // Context window limit for the model. Opus 4.6 (1M context) = 1,000,000.
 // Override via CONTEXT_LIMIT in .env if using a different model variant.
 export const CONTEXT_LIMIT = parseInt(
