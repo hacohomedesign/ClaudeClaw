@@ -17,6 +17,7 @@ import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
 import { initAutoArchive } from './auto-archive.js';
 import { initFleetAdvisor } from './fleet-advisor.js';
+import { initEcosystemAwareness } from './ecosystem-awareness.js';
 
 // Parse --agent flag
 const agentFlagIndex = process.argv.indexOf('--agent');
@@ -209,6 +210,12 @@ async function main(): Promise<void> {
       if (AGENT_ID === 'main' && ALLOWED_CHAT_ID) {
         initFleetAdvisor(
           (text) => bot.api.sendMessage(ALLOWED_CHAT_ID, text, { parse_mode: 'HTML' }).then(() => {}).catch((err) => logger.error({ err }, 'Fleet Advisor send failed')),
+        );
+      }
+      // Initialize Ecosystem Awareness (main bot only — reads project manifests, nudges about stale projects)
+      if (AGENT_ID === 'main' && ALLOWED_CHAT_ID) {
+        initEcosystemAwareness(
+          (text) => bot.api.sendMessage(ALLOWED_CHAT_ID, text, { parse_mode: 'HTML' }).then(() => {}).catch((err) => logger.error({ err }, 'Ecosystem Awareness send failed')),
         );
       }
       if (AGENT_ID === 'main') {
