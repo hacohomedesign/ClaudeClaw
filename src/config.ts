@@ -19,6 +19,14 @@ const envConfig = readEnvFile([
   'CLAUDECLAW_CONFIG',
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
+  'ALLOWED_CHAT_IDS',
+  'BACKGROUND_MAX_CONCURRENT',
+  'AGENT_TIMEOUT_MS',
+  'AGENT_TIMEOUT_MS_SHORT',
+  'MISSION_TIMEOUT_MS',
+  'SUBTASK_TIMEOUT_MS',
+  'MISSION_MAX_RETRIES',
+  'COMMAND_CENTER_URL',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -53,6 +61,14 @@ export const TELEGRAM_BOT_TOKEN =
 // Only respond to this Telegram chat ID. Set this after getting your ID via /chatid.
 export const ALLOWED_CHAT_ID =
   process.env.ALLOWED_CHAT_ID || envConfig.ALLOWED_CHAT_ID || '';
+
+/** Comma-separated list of allowed chat IDs (supports both DM and Forum Group). Falls back to ALLOWED_CHAT_ID. */
+export const ALLOWED_CHAT_IDS: string[] = (() => {
+  const raw = process.env.ALLOWED_CHAT_IDS || envConfig.ALLOWED_CHAT_IDS || '';
+  if (raw) return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (ALLOWED_CHAT_ID) return [ALLOWED_CHAT_ID];
+  return [];
+})();
 
 export const WHATSAPP_ENABLED =
   (process.env.WHATSAPP_ENABLED || envConfig.WHATSAPP_ENABLED || '').toLowerCase() === 'true';
@@ -105,9 +121,51 @@ export const TYPING_REFRESH_MS = 4000;
 
 // Maximum time (ms) an agent query can run before being auto-aborted.
 // Prevents runaway commands (e.g. recursive `find /`) from blocking the bot indefinitely.
-// Default: 5 minutes. Override via AGENT_TIMEOUT_MS in .env.
+// Default: 15 minutes — raised from 5m because Data regularly does multi-file builds,
+// project scaffolding, and dashboard changes that legitimately take 10-12 minutes.
+// Override via AGENT_TIMEOUT_MS in .env.
 export const AGENT_TIMEOUT_MS = parseInt(
-  process.env.AGENT_TIMEOUT_MS || envConfig.AGENT_TIMEOUT_MS || '300000',
+  process.env.AGENT_TIMEOUT_MS || envConfig.AGENT_TIMEOUT_MS || '900000',
+  10,
+);
+
+// For simple/conversational messages, use a shorter timeout to fail fast.
+// A message is "complex" if it mentions build/create/scaffold/implement/write/fix
+// or is longer than 300 chars. Complex tasks get the full AGENT_TIMEOUT_MS.
+// Simple tasks get AGENT_TIMEOUT_MS_SHORT (default: 3 minutes).
+export const AGENT_TIMEOUT_MS_SHORT = parseInt(
+  process.env.AGENT_TIMEOUT_MS_SHORT || envConfig.AGENT_TIMEOUT_MS_SHORT || '180000',
+  10,
+);
+
+const COMPLEX_KEYWORDS = /\b(build|create|scaffold|implement|write|fix|install|deploy|migrate|refactor|generate|add|update|modify|edit)\b/i;
+export function getTimeoutForMessage(message: string): number {
+  if (message.length > 300 || COMPLEX_KEYWORDS.test(message)) {
+    return AGENT_TIMEOUT_MS;
+  }
+  return AGENT_TIMEOUT_MS_SHORT;
+}
+
+// Mission-specific timeouts — independent from per-message agent timeouts.
+// SUBTASK_TIMEOUT_MS: max time for a single focused subtask within a mission.
+// Default 10 minutes — subtasks are decomposed to be focused; if one needs 15m,
+// the decomposition was too coarse.
+export const SUBTASK_TIMEOUT_MS = parseInt(
+  process.env.SUBTASK_TIMEOUT_MS || envConfig.SUBTASK_TIMEOUT_MS || '600000',
+  10,
+);
+
+// MISSION_TIMEOUT_MS: overall wall-clock cap for an entire mission.
+// Default 45 minutes — a 5-subtask mission at 10m each = 50m worst case.
+export const MISSION_TIMEOUT_MS = parseInt(
+  process.env.MISSION_TIMEOUT_MS || envConfig.MISSION_TIMEOUT_MS || '2700000',
+  10,
+);
+
+// MISSION_MAX_RETRIES: how many times a timed-out subtask can be retried.
+// Only timeouts are retried, not logic errors.
+export const MISSION_MAX_RETRIES = parseInt(
+  process.env.MISSION_MAX_RETRIES || envConfig.MISSION_MAX_RETRIES || '1',
   10,
 );
 
@@ -128,6 +186,12 @@ export const DASHBOARD_TOKEN =
 export const DASHBOARD_URL =
   process.env.DASHBOARD_URL || envConfig.DASHBOARD_URL || '';
 
+// Command Center (CMD) integration — optional.
+// Set COMMAND_CENTER_URL to enable /cmd and /status commands.
+// Example: http://localhost:3142 or http://10.0.0.46:3142
+export const COMMAND_CENTER_URL =
+  process.env.COMMAND_CENTER_URL || envConfig.COMMAND_CENTER_URL || '';
+
 // Database encryption key (SQLCipher). Required for encrypted database access.
 export const DB_ENCRYPTION_KEY =
   process.env.DB_ENCRYPTION_KEY || envConfig.DB_ENCRYPTION_KEY || '';
@@ -135,3 +199,17 @@ export const DB_ENCRYPTION_KEY =
 // Google API key for Gemini (memory extraction + consolidation)
 export const GOOGLE_API_KEY =
   process.env.GOOGLE_API_KEY || envConfig.GOOGLE_API_KEY || '';
+
+/** Maximum concurrent background tasks (semaphore slots). */
+export const BACKGROUND_MAX_CONCURRENT = parseInt(
+  process.env.BACKGROUND_MAX_CONCURRENT || envConfig.BACKGROUND_MAX_CONCURRENT || '2',
+  10,
+);
+
+/**
+ * Build a composite key for per-topic state and queue isolation.
+ * Returns `chatId` for DMs (topicId is null/undefined) or `chatId:topicId` for Forum Topics.
+ */
+export function contextKey(chatId: string, topicId?: string | null): string {
+  return topicId ? `${chatId}:${topicId}` : chatId;
+}
